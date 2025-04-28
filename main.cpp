@@ -10,19 +10,20 @@
 #define SCL_PIN 22
 #define LSM6DSO_ADDR 0x6B
 
+// LED pin
+#define LED_PIN 2 // or 4 depending on your board
+
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 BLECharacteristic *pCharacteristic;
 
-// Step counting variables
 int stepCount = 0;
-float stepThreshold = 1.05;  // adjust based on your shaking strength
+float stepThreshold = 1.05;
 unsigned long lastStepTime = 0;
-const unsigned long stepCooldown = 400; // ms
+const unsigned long stepCooldown = 400;
 
-// Function to read one axis acceleration (example: X=0x28, Y=0x2A, Z=0x2C)
 float readAxis(uint8_t lowReg) {
   Wire.beginTransmission(LSM6DSO_ADDR);
   Wire.write(lowReg);
@@ -33,28 +34,42 @@ float readAxis(uint8_t lowReg) {
     uint8_t low = Wire.read();
     uint8_t high = Wire.read();
     int16_t raw = (high << 8) | low;
-    return raw * 0.061f / 1000.0f; // convert mg -> g
+    return raw * 0.061f / 1000.0f;
   }
   return 0.0f;
 }
 
-// Initialize LSM6DSO sensor manually
 bool initLSM6DSO() {
   Wire.beginTransmission(LSM6DSO_ADDR);
-  Wire.write(0x10); // CTRL1_XL register (accel settings)
+  Wire.write(0x10); // CTRL1_XL register
   Wire.write(0x60); // 416 Hz, ±2g
   return (Wire.endTransmission() == 0);
 }
 
+// Custom BLE Callback to receive commands
+class MyCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    if (value == "ON") {
+      digitalWrite(LED_PIN, HIGH);
+      Serial.println("LED ON");
+    } else if (value == "OFF") {
+      digitalWrite(LED_PIN, LOW);
+      Serial.println("LED OFF");
+    }
+  }
+};
+
 void setup() {
   Serial.begin(115200);
 
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000); // 400kHz I2C
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);
   delay(100);
 
-  // Check WHO_AM_I
   Wire.beginTransmission(LSM6DSO_ADDR);
   Wire.write(0x0F);
   Wire.endTransmission(false);
@@ -62,32 +77,27 @@ void setup() {
 
   if (Wire.available()) {
     uint8_t whoami = Wire.read();
-    Serial.print("WHO_AM_I: 0x");
-    Serial.println(whoami, HEX);
     if (whoami != 0x6C) {
-      Serial.println("Wrong device! Exiting.");
       while (1);
     }
   }
 
   if (!initLSM6DSO()) {
-    Serial.println("Failed to initialize LSM6DSO sensor!");
     while (1);
   }
 
-  Serial.println("✅ LSM6DSO initialized manually!");
-
-  // BLE setup
-  BLEDevice::init("ESP32_Step_Counter");
+  BLEDevice::init("ESP32_Step_Counter_LED");
   BLEServer *pServer = BLEDevice::createServer();
   BLEService *pService = pServer->createService(SERVICE_UUID);
 
   pCharacteristic = pService->createCharacteristic(
                       CHARACTERISTIC_UUID,
                       BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_NOTIFY
+                      BLECharacteristic::PROPERTY_NOTIFY |
+                      BLECharacteristic::PROPERTY_WRITE
                     );
 
+  pCharacteristic->setCallbacks(new MyCallbacks());
   pCharacteristic->addDescriptor(new BLE2902());
   pCharacteristic->setValue("Steps: 0");
 
@@ -95,15 +105,14 @@ void setup() {
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->start();
-
-  Serial.println("✅ BLE advertising started!");
 }
 
 void loop() {
-  float ax = readAxis(0x28); // X-axis
-  float ay = readAxis(0x2A); // Y-axis
+  float ax = readAxis(0x28);
+  float ay = readAxis(0x2A);
+  float az = readAxis(0x2C);
 
-  float rms = sqrt(ax * ax + ay * ay); // Only X and Y
+  float rms = sqrt(ax * ax + ay * ay + az * az);
 
   unsigned long now = millis();
 
@@ -111,7 +120,7 @@ void loop() {
     stepCount++;
     lastStepTime = now;
 
-    Serial.println(stepCount); // Only print step number
+    Serial.println(stepCount); //  ONLY print step number
 
     char buffer[20];
     sprintf(buffer, "Steps: %d", stepCount);
